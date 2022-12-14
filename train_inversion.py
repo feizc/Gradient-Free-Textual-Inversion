@@ -99,7 +99,7 @@ class PipelineForward:
                 pe_list.append(z)
 
         elif isinstance(prompt_embedding, np.ndarray):  # single query or None
-            prompt_embedding = torch.tensor(prompt_embedding).type(torch.float32).to(device)  # z
+            prompt_embedding = torch.tensor(prompt_embedding).type(torch.float32).to(self.device)  # z
             with torch.no_grad():
                 prompt_embedding = self.linear(prompt_embedding)  # Az
             if self.init_prompt is not None:
@@ -172,7 +172,6 @@ def calculate_mse_loss(image_generator, dataloader, device):
 
 def main(): 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task_name", default='sst2', type=str)
     parser.add_argument("--intrinsic_dim", default=500, type=int)
     parser.add_argument("--k_shot", default=16, type=int)
     parser.add_argument("--batch_size", default=32, type=int)
