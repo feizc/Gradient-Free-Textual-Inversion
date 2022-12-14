@@ -11,7 +11,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 
 import torch.nn.functional as F 
 from utils import TextualInversionDataset 
-
+from tqdm import tqdm
 
 
 class PipelineForward:
@@ -28,7 +28,7 @@ class PipelineForward:
             tokenizer=self.tokenizer,
         ).to(args.device) 
 
-        self.linear = torch.nn.Linear(args.intrinsic_dim, args.model_dim, bias=False) 
+        self.linear = torch.nn.Linear(args.intrinsic_dim, args.model_dim, bias=False).to(args.device) 
 
         if args.random_proj == 'normal': 
             embedding = self.text_encoder.get_input_embeddings().weight.clone().cpu()
@@ -64,7 +64,7 @@ class PipelineForward:
         print('convert text inversion: ', args.placeholder_token, 'in id: ', str(placeholder_token_id)) 
         self.placeholder_token_id = placeholder_token_id 
         self.placeholder_token = args.placeholder_token
-        self.init_prompt = token_embeds[initializer_token_id] 
+        self.init_prompt = token_embeds[initializer_token_id].to(args.device) 
         self.num_call = 0 
 
         train_dataset = TextualInversionDataset(
@@ -72,7 +72,7 @@ class PipelineForward:
             tokenizer=self.tokenizer,
             size=args.resolution,
             placeholder_token=args.placeholder_token,
-            repeats=args.repeats,
+            repeats=args.repeats*10,
             learnable_property=args.learnable_property,
             center_crop=args.center_crop,
             set="train",
@@ -91,7 +91,7 @@ class PipelineForward:
         pe_list = []
         if isinstance(prompt_embedding, list):  # multiple queries
             for pe in prompt_embedding:
-                z = torch.tensor(pe).type(torch.float32)  # z 
+                z = torch.tensor(pe).type(torch.float32).to(self.device)  # z 
                 with torch.no_grad():
                     z = self.linear(z)  # Az 
                 if self.init_prompt is not None:
@@ -99,7 +99,7 @@ class PipelineForward:
                 pe_list.append(z)
 
         elif isinstance(prompt_embedding, np.ndarray):  # single query or None
-            prompt_embedding = torch.tensor(prompt_embedding).type(torch.float32)  # z
+            prompt_embedding = torch.tensor(prompt_embedding).type(torch.float32).to(device)  # z
             with torch.no_grad():
                 prompt_embedding = self.linear(prompt_embedding)  # Az
             if self.init_prompt is not None:
@@ -112,12 +112,14 @@ class PipelineForward:
         
         loss_list = [] 
         print('begin to calculate loss') 
-        for pe in pe_list: 
+        for pe in tqdm(pe_list): 
             token_embeds = self.text_encoder.get_input_embeddings().weight.data 
             pe.to(self.text_encoder.get_input_embeddings().weight.dtype)
             token_embeds[self.placeholder_token_id] = pe 
             loss = calculate_mse_loss(self.pipe, self.dataloader, self.device) 
             if loss < self.best_loss: 
+                print('update loss: ', loss)
+                self.best_loss = loss
                 self.best_inversion = pe
             loss_list.append(loss)
 
@@ -131,7 +133,7 @@ class PipelineForward:
 
 
 def calculate_mse_loss(image_generator, dataloader, device): 
-    print(image_generator.text_encoder.get_input_embeddings().weight.data[49408]) 
+    # print(image_generator.text_encoder.get_input_embeddings().weight.data[49408]) 
     noise_scheduler = DDPMScheduler.from_config('./ckpt/scheduler') 
     loss_cum = .0 
     with torch.no_grad(): 
@@ -154,7 +156,7 @@ def calculate_mse_loss(image_generator, dataloader, device):
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
             # Get the text embedding for conditioning
-            encoder_hidden_states = image_generator.text_encoder(batch["input_ids"])[0].to(device)
+            encoder_hidden_states = image_generator.text_encoder(batch["input_ids"].to(device))[0]
             
             # Predict the noise residual
             noise_pred = image_generator.unet(noisy_latents, timesteps, encoder_hidden_states).sample 
