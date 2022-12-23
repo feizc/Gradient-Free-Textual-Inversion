@@ -13,3 +13,10 @@ Hereto, we introduce a gradient-free framework to optimize the continuous textua
 Specifically, we first initialize the textual inversion with pooling of image captioning results.  
 Then, instead of optimizing in the original high-dimensional embedding space, which is intractable for derivative-free optimization, we perform optimization in a randomly generated subspace with project reparameterization through iterative evolutionary strategy. 
 
+<p align="center">
+     <img src="figures/framework.png" alt="gradient-free textual inversion framework" width = "600">
+     <br/>
+     <sub><em>
+     Overview of the proposed gradient-free textual inversion framework.
+    </em></sub>
+</p>
