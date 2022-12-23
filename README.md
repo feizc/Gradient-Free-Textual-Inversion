@@ -14,7 +14,7 @@ Specifically, we first initialize the textual inversion with pooling of image ca
 Then, instead of optimizing in the original high-dimensional embedding space, which is intractable for derivative-free optimization, we perform optimization in a randomly generated subspace with project reparameterization through iterative evolutionary strategy. 
 
 <p align="center">
-     <img src="figures/framework.png" alt="gradient-free textual inversion framework" width = "600">
+     <img src="figures/framework.pdf" alt="gradient-free textual inversion framework" width = "600">
      <br/>
      <sub><em>
      Overview of the proposed gradient-free textual inversion framework.
