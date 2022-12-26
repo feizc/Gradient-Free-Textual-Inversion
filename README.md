@@ -5,7 +5,7 @@ We introduce to use evolution strategy from [OpenAI](https://openai.com/blog/evo
 Our implementation is totally compatible with [diffusers](https://github.com/huggingface/diffusers) and stable diffusion model.
 
 <p align="center">
-     <img src="figures/cma.gif" alt="cma process" width = "400">
+     <img src="figures/cma.gif" alt="cma process" width = "320">
      <br/>
      <sub><em>
      Evolution process for textual embeddings.
