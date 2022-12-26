@@ -1,4 +1,3 @@
-from turtle import forward
 import cma 
 import argparse 
 import torch 
@@ -64,7 +63,6 @@ class PipelineForward:
         print('convert text inversion: ', args.placeholder_token, 'in id: ', str(placeholder_token_id)) 
         self.placeholder_token_id = placeholder_token_id 
         self.placeholder_token = args.placeholder_token
-        self.init_prompt = token_embeds[initializer_token_id].to(args.device) 
         self.num_call = 0 
 
         train_dataset = TextualInversionDataset(
@@ -72,7 +70,7 @@ class PipelineForward:
             tokenizer=self.tokenizer,
             size=args.resolution,
             placeholder_token=args.placeholder_token,
-            repeats=args.repeats*10,
+            repeats=args.repeats,
             learnable_property=args.learnable_property,
             center_crop=args.center_crop,
             set="train",
@@ -82,46 +80,62 @@ class PipelineForward:
         self.device = args.device
         print('load data length: ', len(self.dataloader))
 
+        # optimize incremental elements or original inversion
+        if init_text_inversion is not None:
+            self.init_text_inversion = init_text_inversion
+        else:
+            self.init_text_inversion = token_embeds[initializer_token_id].to(args.device) 
+
         self.best_inversion = None 
-        self.best_loss = 1000
 
-
-    def eval(self, prompt_embedding): 
+    def eval(self, inversion_embedding): 
         self.num_call += 1 
         pe_list = []
-        if isinstance(prompt_embedding, list):  # multiple queries
-            for pe in prompt_embedding:
+        if isinstance(inversion_embedding, list):  # multiple queries
+            for pe in inversion_embedding:
                 z = torch.tensor(pe).type(torch.float32).to(self.device)  # z 
                 with torch.no_grad():
-                    z = self.linear(z)  # Az 
-                if self.init_prompt is not None:
-                    z = z + self.init_prompt  # Az + p_0
+                    z = self.linear(z)  # W_p Q
+                if self.init_text_inversion is not None:
+                    z = z + self.init_text_inversion  # W_p Q + p_0
                 pe_list.append(z)
 
-        elif isinstance(prompt_embedding, np.ndarray):  # single query or None
-            prompt_embedding = torch.tensor(prompt_embedding).type(torch.float32).to(self.device)  # z
+        elif isinstance(inversion_embedding, np.ndarray):  # single query or None
+            inversion_embedding = torch.tensor(inversion_embedding).type(torch.float32).to(self.device)  # z
             with torch.no_grad():
-                prompt_embedding = self.linear(prompt_embedding)  # Az
-            if self.init_prompt is not None:
-                prompt_embedding = prompt_embedding + self.init_prompt  # Az + p_0
-            pe_list.append(prompt_embedding)
+                inversion_embedding = self.linear(inversion_embedding)  # W_p Q
+            if self.init_text_inversion is not None:
+                inversion_embedding = inversion_embedding + self.init_text_inversion  # W_p Q + p_0
+            pe_list.append(inversion_embedding)
         else:
             raise ValueError(
-                f'[Prompt Embedding] Only support [list, numpy.ndarray], got `{type(prompt_embedding)}` instead.'
+                f'[Inversion Embedding] Only support [list, numpy.ndarray], got `{type(inversion_embedding)}` instead.'
             )
         
         loss_list = [] 
         print('begin to calculate loss') 
+
+        # fixed time step for fair evaluation 
+        noise_scheduler = DDPMScheduler.from_config('./ckpt/scheduler') 
+        timesteps = torch.randint(
+                0, noise_scheduler.config.num_train_timesteps, (self.batch_size,), device=self.device
+            ).long()
+        
+        best_loss = 1000
+        best_inversion = None
+
         for pe in tqdm(pe_list): 
             token_embeds = self.text_encoder.get_input_embeddings().weight.data 
             pe.to(self.text_encoder.get_input_embeddings().weight.dtype)
             token_embeds[self.placeholder_token_id] = pe 
-            loss = calculate_mse_loss(self.pipe, self.dataloader, self.device) 
-            if loss < self.best_loss: 
-                print('update loss: ', loss)
-                self.best_loss = loss
-                self.best_inversion = pe
+            loss = calculate_mse_loss(self.pipe, self.dataloader, self.device, noise_scheduler, timesteps) 
+            if loss < best_loss: 
+                best_loss = loss
+                best_inversion = pe
             loss_list.append(loss)
+
+        # update total point 
+        self.best_inversion = best_inversion
 
         return loss_list 
 
@@ -132,9 +146,9 @@ class PipelineForward:
 
 
 
-def calculate_mse_loss(image_generator, dataloader, device): 
+def calculate_mse_loss(image_generator, dataloader, device, noise_scheduler, timesteps): 
     # print(image_generator.text_encoder.get_input_embeddings().weight.data[49408]) 
-    noise_scheduler = DDPMScheduler.from_config('./ckpt/scheduler') 
+    
     loss_cum = .0 
     with torch.no_grad(): 
         for batch in dataloader: 
@@ -144,12 +158,7 @@ def calculate_mse_loss(image_generator, dataloader, device):
 
             # Sample noise that we'll add to the latents
             noise = torch.randn(latents.shape).to(latents.device)
-            bsz = latents.shape[0]
             # Sample a random timestep for each image
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device
-            ).long()
-
 
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -172,10 +181,11 @@ def calculate_mse_loss(image_generator, dataloader, device):
 
 def main(): 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--intrinsic_dim", default=500, type=int)
+
+    parser.add_argument("--intrinsic_dim", default=256, type=int)
     parser.add_argument("--k_shot", default=16, type=int)
     parser.add_argument("--batch_size", default=32, type=int)
-    parser.add_argument("--budget", default=8000, type=int)
+    parser.add_argument("--budget", default=8000, type=int) # number of iterations 
     parser.add_argument("--popsize", default=20, type=int) # number of candidates 
     parser.add_argument("--bound", default=0, type=int)
     parser.add_argument("--sigma", default=1, type=float)
@@ -186,9 +196,9 @@ def main():
     parser.add_argument("--random_proj", default='normal', type=str)
     parser.add_argument("--model_dim", default=768, type=int)
     parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--loss_type", default='ce', type=str)
+    parser.add_argument("--loss_type", default='noise', type=str)
     parser.add_argument("--cat_or_add", default='add', type=str)
-    parser.add_argument("--device", default= torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    parser.add_argument("--device", default= torch.device("cuda:2" if torch.cuda.is_available() else "cpu"))
     parser.add_argument("--parallel", default=False, type=bool, help='Whether to allow parallel evaluation')
     parser.add_argument(
         "--placeholder_token",
@@ -256,11 +266,12 @@ def main():
     pipeline_forward = PipelineForward(model_path='./ckpt', args=args)
 
     es = cma.CMAEvolutionStrategy(args.intrinsic_dim * [0], args.sigma, inopts=cma_opts) 
+
     while not es.stop(): 
-        solutions = es.ask() # (popsize, intrinsic_dim)
+        solutions = es.ask() # (popsize, intrinsic_dim) 
         fitnesses = pipeline_forward.eval(solutions) 
+        print(fitnesses) # loss for each point 
         es.tell(solutions, fitnesses) 
-    
     pipeline_forward.save('./save')
 
 

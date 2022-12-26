@@ -49,9 +49,9 @@ def load_learned_embed_in_clip(learned_embeds_path, text_encoder, tokenizer, tok
 
 
 def main():
-    model_path = './save' 
+    model_path = './ckpt' 
     learned_embeds_path = './save/learned_embeds.bin' 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 
     tokenizer = CLIPTokenizer.from_pretrained(
         os.path.join(model_path, 'tokenizer')
