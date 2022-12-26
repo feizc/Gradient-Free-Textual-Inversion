@@ -1,6 +1,6 @@
 # Gradient-Free Textual Inversion 
 
-Gradient-Free Textual Inversion for Personalized Text-to-Image Generation. 
+Gradient-free textual inversion for personalized text-to-image generation. 
 We introduce to use evolution strategy from [OpenAI](https://openai.com/blog/evolution-strategies/) without gradient to optimize the text embeddings. 
 Our implementation is totally compatible with [diffusers](https://github.com/huggingface/diffusers) and stable diffusion model.
 
