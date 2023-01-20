@@ -92,7 +92,7 @@ class GradientFreePipeline:
 
         # optimize incremental elements or original inversion
         if init_text_inversion is not None:
-            self.init_text_inversion = init_text_inversion
+            self.init_text_inversion = init_text_inversion.to(args.device)
         else:
             self.init_text_inversion = token_embeds[initializer_token_id].to(args.device) 
 
@@ -216,11 +216,13 @@ def main():
     parser.add_argument("--alg", default='CMA', type=str) # support other advanced evelution strategy 
     parser.add_argument("--projection_modeling", default='pca', type=str) # decomposition method {'pca', 'prior_norm'}
     parser.add_argument("--model_dim", default=768, type=int) # dim of textual inversion
-    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--inversion_initialize", default='./save/initialize_emb.bin', type=str) # dim of textual inversion
+    parser.add_argument("--seed", default=2023, type=int)
     parser.add_argument("--loss_type", default='noise', type=str)
     parser.add_argument("--cat_or_add", default='add', type=str)
     parser.add_argument("--device", default= torch.device("cuda:2" if torch.cuda.is_available() else "cpu"))
     parser.add_argument("--parallel", default=False, type=bool, help='Whether to allow parallel evaluation')
+    
     parser.add_argument(
         "--placeholder_token",
         type=str,
@@ -284,7 +286,13 @@ def main():
     if args.bound > 0:
         cma_opts['bounds'] = [-1 * args.bound, 1 * args.bound] 
 
-    pipeline = GradientFreePipeline(model_path='./ckpt', args=args)
+    if args.inversion_initialize is not None:
+        print('initialize textual inversion')
+        init_text_inversion = torch.load(args.inversion_initialize, map_location="cpu")["initialize"]
+    else:
+        init_text_inversion = None
+
+    pipeline = GradientFreePipeline(model_path='./ckpt', args=args, init_text_inversion=init_text_inversion)
 
     es = cma.CMAEvolutionStrategy(args.intrinsic_dim * [0], args.sigma, inopts=cma_opts) 
 
