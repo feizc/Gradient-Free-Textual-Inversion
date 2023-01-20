@@ -4,6 +4,7 @@ import torch
 import os 
 import numpy as np 
 import copy 
+from sklearn.decomposition import PCA
 
 from diffusers import StableDiffusionPipeline, DDPMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
@@ -13,7 +14,7 @@ from utils import TextualInversionDataset
 from tqdm import tqdm
 
 
-class PipelineForward:
+class GradientFreePipeline:
     def __init__(self, model_path, args, init_text_inversion=None, ):
         self.tokenizer = CLIPTokenizer.from_pretrained(
             os.path.join(model_path, 'tokenizer')
@@ -27,20 +28,29 @@ class PipelineForward:
             tokenizer=self.tokenizer,
         ).to(args.device) 
 
-        self.linear = torch.nn.Linear(args.intrinsic_dim, args.model_dim, bias=False).to(args.device) 
-
-        if args.random_proj == 'normal': 
+        if args.projection_modeling == 'prior_normal': 
+            self.linear = torch.nn.Linear(args.intrinsic_dim, args.model_dim, bias=False).to(args.device) 
             embedding = self.text_encoder.get_input_embeddings().weight.clone().cpu()
             mu_hat = np.mean(embedding.reshape(-1).detach().cpu().numpy())
             std_hat = np.std(embedding.reshape(-1).detach().cpu().numpy())
             mu = 0.0
-            std = args.alpha * std_hat / (np.sqrt(args.intrinsic_dim) * args.sigma)
+            std = args.alpha * std_hat / (np.sqrt(args.intrinsic_dim) * args.sigma) 
+
+            # incorporate temperature factor 
             # temp = intrinsic_dim - std_hat * std_hat
             # mu = mu_hat / temp
             # std = std_hat / np.sqrt(temp)
             print('[Embedding] mu: {} | std: {} [RandProj]  mu: {} | std: {}'.format(mu_hat, std_hat, mu, std))
             for p in self.linear.parameters():
                 torch.nn.init.normal_(p, mu, std) 
+        
+        elif args.projection_modeling == 'pca': 
+            embedding = self.text_encoder.get_input_embeddings().weight.clone().cpu() 
+            embedding = embedding.detach().cpu().numpy() # (49408, 768)
+            
+            self.pca_model = PCA(n_components=args.intrinsic_dim) 
+            self.pca_model.fit(embedding) 
+            
         
         # Add the placeholder token in tokenizer
         num_added_tokens = self.tokenizer.add_tokens(args.placeholder_token)  
@@ -86,24 +96,35 @@ class PipelineForward:
         else:
             self.init_text_inversion = token_embeds[initializer_token_id].to(args.device) 
 
+        self.args = args
         self.best_inversion = None 
 
     def eval(self, inversion_embedding): 
         self.num_call += 1 
         pe_list = []
         if isinstance(inversion_embedding, list):  # multiple queries
-            for pe in inversion_embedding:
-                z = torch.tensor(pe).type(torch.float32).to(self.device)  # z 
-                with torch.no_grad():
-                    z = self.linear(z)  # W_p Q
-                if self.init_text_inversion is not None:
-                    z = z + self.init_text_inversion  # W_p Q + p_0
+            for pe in inversion_embedding: 
+                if self.args.projection_modeling == 'prior_normal': 
+                    z = torch.tensor(pe).type(torch.float32).to(self.device)  # z 
+                    with torch.no_grad():
+                        z = self.linear(z)  # W_p Q
+                    if self.init_text_inversion is not None:
+                        z = z + self.init_text_inversion  # W_p Q + p_0
+                elif self.args.projection_modeling == 'pca': 
+                    z = self.pca_model.inverse_transform(pe) # project the original text embedding space
+                    z = torch.tensor(z).type(torch.float32).to(self.device) 
+                    if self.init_text_inversion is not None:
+                        z = z + self.init_text_inversion  
                 pe_list.append(z)
 
-        elif isinstance(inversion_embedding, np.ndarray):  # single query or None
-            inversion_embedding = torch.tensor(inversion_embedding).type(torch.float32).to(self.device)  # z
-            with torch.no_grad():
-                inversion_embedding = self.linear(inversion_embedding)  # W_p Q
+        elif isinstance(inversion_embedding, np.ndarray):  # single query or None 
+            if self.args.projection_modeling == 'prior_normal': 
+                inversion_embedding = torch.tensor(inversion_embedding).type(torch.float32).to(self.device)  # z
+                with torch.no_grad():
+                    inversion_embedding = self.linear(inversion_embedding)  # W_p Q
+            elif self.args.projection_modeling == 'pca': 
+                    inversion_embedding = self.pca_model.inverse_transform(inversion_embedding) 
+                    inversion_embedding = torch.tensor(inversion_embedding).type(torch.float32).to(self.device) 
             if self.init_text_inversion is not None:
                 inversion_embedding = inversion_embedding + self.init_text_inversion  # W_p Q + p_0
             pe_list.append(inversion_embedding)
@@ -185,16 +206,16 @@ def main():
     parser.add_argument("--intrinsic_dim", default=256, type=int)
     parser.add_argument("--k_shot", default=16, type=int)
     parser.add_argument("--batch_size", default=32, type=int)
-    parser.add_argument("--budget", default=8000, type=int) # number of iterations 
+    parser.add_argument("--budget", default=5000, type=int) # number of iterations 
     parser.add_argument("--popsize", default=20, type=int) # number of candidates 
     parser.add_argument("--bound", default=0, type=int)
     parser.add_argument("--sigma", default=1, type=float)
     parser.add_argument("--alpha", default=1, type=float)
     parser.add_argument("--print_every", default=50, type=int)
     parser.add_argument("--eval_every", default=100, type=int)
-    parser.add_argument("--alg", default='CMA', type=str)
-    parser.add_argument("--random_proj", default='normal', type=str)
-    parser.add_argument("--model_dim", default=768, type=int)
+    parser.add_argument("--alg", default='CMA', type=str) # support other advanced evelution strategy 
+    parser.add_argument("--projection_modeling", default='pca', type=str) # decomposition method {'pca', 'prior_norm'}
+    parser.add_argument("--model_dim", default=768, type=int) # dim of textual inversion
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--loss_type", default='noise', type=str)
     parser.add_argument("--cat_or_add", default='add', type=str)
@@ -263,16 +284,16 @@ def main():
     if args.bound > 0:
         cma_opts['bounds'] = [-1 * args.bound, 1 * args.bound] 
 
-    pipeline_forward = PipelineForward(model_path='./ckpt', args=args)
+    pipeline = GradientFreePipeline(model_path='./ckpt', args=args)
 
     es = cma.CMAEvolutionStrategy(args.intrinsic_dim * [0], args.sigma, inopts=cma_opts) 
 
     while not es.stop(): 
         solutions = es.ask() # (popsize, intrinsic_dim) 
-        fitnesses = pipeline_forward.eval(solutions) 
+        fitnesses = pipeline.eval(solutions) 
         print(fitnesses) # loss for each point 
         es.tell(solutions, fitnesses) 
-    pipeline_forward.save('./save')
+    pipeline.save('./save')
 
 
 if __name__ == "__main__":
