@@ -73,11 +73,11 @@ def main():
     processor = CLIPProcessor.from_pretrained('./clip') 
 
     sentence_embeddings, token_embeddings = embedding_generate(model, 
-                                                                    tokenizer, 
-                                                                    text_encoder,
-                                                                    automatic_subjective_classnames, 
-                                                                    imagenet_template, 
-                                                                    device)
+                                                                tokenizer, 
+                                                                text_encoder,
+                                                                automatic_subjective_classnames, 
+                                                                imagenet_template, 
+                                                                device)
     print('sentence embedding size: ', sentence_embeddings.size(), ' token embedding size: ', token_embeddings.size())
 
     image_feature_list = [] 
