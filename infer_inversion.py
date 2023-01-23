@@ -48,9 +48,15 @@ def load_learned_embed_in_clip(learned_embeds_path, text_encoder, tokenizer, tok
 
 
 
-def main():
-    model_path = './ckpt' 
-    learned_embeds_path = './save/learned_embeds.bin' 
+def main(): 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", default='./ckpt', type=str)
+    parser.add_argument("--inversion_path", default='./save/learned_embeds.bin' , type=str)
+    parser.add_argument("--prompt", default='city under the sun, painting, in a style of <sks>' , type=str)
+    args = parser.parse_args() 
+
+    model_path = args.model_path
+    learned_embeds_path = args.inversion_path
     device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 
     tokenizer = CLIPTokenizer.from_pretrained(
@@ -67,7 +73,7 @@ def main():
         tokenizer=tokenizer,
     ).to(device) 
 
-    prompt = 'city under the sun, painting, in a style of <sks>' 
+    prompt = args.prompt 
 
     num_samples = 2 #@param {type:"number"}
     num_rows = 2 #@param {type:"number"}
